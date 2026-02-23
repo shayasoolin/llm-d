@@ -68,6 +68,18 @@ The LeaderWorkerSet (LWS) Kubernetes workload controller specializes in deployin
 
 Use the [LWS installation guide](https://lws.sigs.k8s.io/docs/installation/) to install 0.7.0 or newer when deploying an llm-d guide using LWS.
 
+### (Optional) Install Grove for multi-host inference
+
+Grove is a Kubernetes workload controller for deploying multi-host inference workloads using PodCliqueSets. Grove provides an alternative to LeaderWorkerSet with enhanced support for gang scheduling and complex multi-node inference topologies, particularly useful for deployments leveraging NVIDIA MNNVL (Multi-Node NVLink) connectivity.
+
+Use the [Grove installation guide](https://github.com/ai-dynamo/grove/blob/main/docs/installation.md) to install Grove when deploying an llm-d guide using Grove (such as the wide-ep Grove variant).
+
+### (Optional) Install KAI Scheduler for AI workload scheduling
+
+The KAI Scheduler is an open-source Kubernetes-native scheduler optimized for AI workloads at scale. It provides gang scheduling, hierarchical queues, GPU sharing, and other features that enhance scheduling for AI inference and training workloads. KAI Scheduler works with Grove for gang scheduling of PodGangs.
+
+Use the [KAI Scheduler installation guide](https://github.com/NVIDIA/KAI-Scheduler?tab=readme-ov-file#installation) to install KAI Scheduler for enhanced AI workload scheduling.
+
 ## Installing on a well-lit infrastructure provider
 
 The following documentation describes llm-d tested setup for cluster infrastructure providers as well as specific deployment settings that will impact how model servers is expected to access accelerators.

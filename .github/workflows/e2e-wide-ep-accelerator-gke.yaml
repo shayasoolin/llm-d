@@ -115,15 +115,15 @@ jobs:
 
       - name: Deploy model server
         run: |
-          cd guides/wide-ep-lws
+          cd guides/wide-ep
           echo "Deploying Model Server..."
-          kubectl apply -k ./manifests/modelserver/gke -n ${NAMESPACE} | tee ~/wide-ep-deployment.log
+          kubectl apply -k ./manifests/modelserver/lws/gke -n ${NAMESPACE} | tee ~/wide-ep-deployment.log
           echo "---------------------------------------" >> ~/wide-ep-deployment.log
 
       - name: Deploy InferencePool
         shell: bash
         run: |
-          cd guides/wide-ep-lws/manifests
+          cd guides/wide-ep/manifests
           echo "Deploying InferencePool..."
           helm install llm-d-infpool \
           --namespace ${NAMESPACE} \
@@ -251,5 +251,5 @@ jobs:
         run: |
           cd guides
           helm uninstall llm-d-infpool -n ${NAMESPACE}
-          kubectl delete -k ./wide-ep-lws/manifests/modelserver/gke -n ${NAMESPACE}
+          kubectl delete -k ./wide-ep/manifests/modelserver/lws/gke -n ${NAMESPACE}
           kubectl delete -k ./recipes/gateway/gke-l7-regional-external-managed -n ${NAMESPACE}

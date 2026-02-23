@@ -17,7 +17,7 @@ In this example, we will demonstrate a deployment of `DeepSeek-R1-0528` with:
 
 ## Hardware Requirements
 
-This guide requires 32 Nvidia H200 or B200 GPUs and InfiniBand or RoCE RDMA networking. Check `modelserver/base/decode.yaml` and `modelserver/base/prefill.yaml` for detailed resource requirements.
+This guide requires 32 Nvidia H200 or B200 GPUs and InfiniBand or RoCE RDMA networking. Check `manifests/modelserver/lws/base/decode.yaml` and `manifests/modelserver/lws/base/prefill.yaml` for detailed resource requirements.
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ This guide requires 32 Nvidia H200 or B200 GPUs and InfiniBand or RoCE RDMA netw
 ## Installation
 
 ```bash
-cd guides/wide-ep-lws/
+cd guides/wide-ep/
 ```
 
 ### Deploy Model Servers
@@ -55,7 +55,7 @@ GKE and CoreWeave are tested Kubernetes providers for this well-lit path. You ca
 #### GKE (H200)
 
 ```bash
-kubectl apply -k ./manifests/modelserver/gke -n ${NAMESPACE}
+kubectl apply -k ./manifests/modelserver/lws/gke -n ${NAMESPACE}
 ```
 
 <!-- TAB:GKE (B200) -->
@@ -63,14 +63,14 @@ kubectl apply -k ./manifests/modelserver/gke -n ${NAMESPACE}
 
 ```bash
 # Deploy on GKE for B200 on the a4 instance type to work around a known vLLM memory issue
-kubectl apply -k ./manifests/modelserver/gke-a4 -n ${NAMESPACE}
+kubectl apply -k ./manifests/modelserver/lws/gke-a4 -n ${NAMESPACE}
 ```
 
 <!-- TAB:CoreWeave -->
 #### CoreWeave
 
 ```bash
-kubectl apply -k ./manifests/modelserver/coreweave  -n ${NAMESPACE}
+kubectl apply -k ./manifests/modelserver/lws/coreweave -n ${NAMESPACE}
 ```
 
 <!-- TABS:END -->
@@ -130,7 +130,7 @@ You can also customize your gateway, for more information on how to do that see 
 
 ## Tuning Selective PD
 
-As with PD, the `wide-ep-lws` guide supports selective PD. For information on this refer to [this section of the PD docs](../pd-disaggregation/README.md#tuning-selective-pd).
+As with PD, the `wide-ep` guide supports selective PD. For information on this refer to [this section of the PD docs](../pd-disaggregation/README.md#tuning-selective-pd).
 
 ## Verifying the installation
 
@@ -236,9 +236,9 @@ This equals to 3200 input tokens/s/GPU and 3100 output tokens/s/GPU.
 To remove the deployment:
 
 ```bash
-# From examples/wide-ep-lws
+# From guides/wide-ep
 helm uninstall llm-d-infpool -n ${NAMESPACE}
-kubectl delete -k ./manifests/modelserver/<gke|coreweave> -n ${NAMESPACE}
+kubectl delete -k ./manifests/modelserver/lws/<gke|gke-a4|coreweave> -n ${NAMESPACE}
 kubectl delete -k ../recipes/gateway/<gke-l7-regional-external-managed|istio|kgateway|kgateway-openshift> -n ${NAMESPACE}
 ```
 

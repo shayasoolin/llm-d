@@ -64,7 +64,7 @@ spec:
                 LEADER_ADDRESS="${LEADER_PCLQ_NAME}-0.${GROVE_HEADLESS_SERVICE}"
 
                 exec vllm serve \
-                  /models/deepseek-r1-fp4 \
+                  deepseek-ai/DeepSeek-R1-0528 \
                   --port 8000 \
                   --trust-remote-code \
                   --disable-uvicorn-access-log \
@@ -247,7 +247,7 @@ spec:
                 LEADER_ADDRESS="${LEADER_PCLQ_NAME}-0.${GROVE_HEADLESS_SERVICE}"
 
                 exec vllm serve \
-                  /models/deepseek-r1-fp4 \
+                  deepseek-ai/DeepSeek-R1-0528 \
                   --port 8200 \
                   --trust-remote-code \
                   --disable-uvicorn-access-log \
@@ -453,7 +453,7 @@ spec:
                 LEADER_ADDRESS="${LEADER_PCLQ_NAME}-0.${GROVE_HEADLESS_SERVICE}"
               
                 exec vllm serve \
-                  /models/deepseek-r1-fp4 \
+                  deepseek-ai/DeepSeek-R1-0528 \
                   --port 8200 \
                   --trust-remote-code \
                   --disable-uvicorn-access-log \

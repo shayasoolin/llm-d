@@ -169,9 +169,7 @@ replicaset.apps/llm-d-infpool-epp-55bb9857cf                      1         1   
 
 For instructions on getting started making inference requests see [our docs](../../docs/getting-started-inferencing.md)
 
-**_NOTE:_** This example particularly benefits from utilizing stern as described in the [getting-started-inferencing docs](../../docs/getting-started-inferencing.md#following-logs-for-requests), because while we only have 3 inferencing pods, it has 16 vllm servers or ranks.
-
-**_NOTE:_** Compared to the other examples, this one takes anywhere between 7-10 minutes for the vllm API servers to startup so this might take longer before you can interact with this example.
+**_NOTE:_** This example particularly benefits from utilizing stern as described in the [getting-started-inferencing docs](../../docs/getting-started-inferencing.md#following-logs-for-requests), as we have 9 pods - one per node.
 
 ## Cleanup
 
@@ -181,7 +179,7 @@ To remove the deployment:
 # From guides/wide-ep
 helm uninstall llm-d-infpool -n ${NAMESPACE}
 kubectl delete -k ./manifests/modelserver/grove/ -n ${NAMESPACE}
-kubectl delete -k ./manifests/gateway/<gke-l7-regional-external-managed|istio|kgateway|kgateway-openshift> -n ${NAMESPACE}
+kubectl delete -k ../recipes/gateway/<gke-l7-regional-external-managed|istio|kgateway|kgateway-openshift> -n ${NAMESPACE}
 ```
 
 ## Customization

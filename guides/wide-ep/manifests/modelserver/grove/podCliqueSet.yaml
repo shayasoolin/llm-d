@@ -4,6 +4,7 @@
 #   - VLLM_FLASHINFER_MOE_BACKEND=throughput (use CUTLASS backend with alltoallv integration)
 #
 # NOTE: EPLB (--enable-eplb) is NOT supported with FP4, do not add it.
+
 apiVersion: grove.io/v1alpha1
 kind: PodCliqueSet
 metadata:
@@ -11,12 +12,17 @@ metadata:
 spec:
   replicas: 1
   template:
+    topologyConstraint:
+      packDomain: rack
     cliques:
     - name: prefill
       labels:
         kai.scheduler/queue: default-queue
-        llm-d.ai/inferenceServing: "true"
-        llm-d.ai/model: DeepSeek-R1
+        llm-d.ai/inference-serving: "true"
+        llm-d.ai/guide: "wide-ep"
+        llm-d.ai/accelerator-variant: "gpu"
+        llm-d.ai/accelerator-vendor: "nvidia"
+        llm-d.ai/model: DeepSeek-R1-0528
         llm-d.ai/role: prefill
       spec:
         replicas: 1
@@ -24,18 +30,19 @@ spec:
         roleName: prefill
         podSpec:
           serviceAccountName: deepseek-r1
-          # Resource claims for ComputeDomain (MNNVL)
-          resourceClaims:
-            - name: compute-domain-channel
-              resourceClaimTemplateName: llm-d-wide-ep-compute-domain-channel
+          schedulerName: kai-scheduler
           volumes:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 2Gi # roughly 32MB per local DP plus scratch space
+                sizeLimit: 2Gi
+            - name: hf-cache
+              emptyDir: {}
+            - name: jit-cache
+              emptyDir: {}
           containers:
           - name: vllm
-            image: ghcr.io/llm-d/llm-d-cuda:v0.4.0
+            image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
             securityContext:
               capabilities:
                 add:
@@ -53,40 +60,82 @@ spec:
                 # https://github.com/llm-d/llm-d/issues/352
                 find /dev/shm -type f -delete
 
-                #################
-                # RUN vLLM prefill
-                #################
+                LEADER_PCLQ_NAME="${GROVE_PCLQ_NAME/worker/leader}"
+                LEADER_ADDRESS="${LEADER_PCLQ_NAME}-0.${GROVE_HEADLESS_SERVICE}"
 
                 exec vllm serve \
-                  nvidia/DeepSeek-R1-NVFP4 \
+                  /models/deepseek-r1-fp4 \
                   --port 8000 \
                   --trust-remote-code \
                   --disable-uvicorn-access-log \
+                  --enable-expert-parallel \
                   --tensor-parallel-size $TP_SIZE \
+                  --data-parallel-size $DP_SIZE_LOCAL \
+                  --data-parallel-size-local $DP_SIZE_LOCAL \
+                  --data-parallel-address ${LEADER_ADDRESS} \
+                  --data-parallel-rpc-port 5555 \
                   --kv_transfer_config '{"kv_connector":"NixlConnector",
                                           "kv_role":"kv_both"}' \
+                  --async-scheduling \
+                  --kv-cache-memory-bytes=${KV_CACHE_MEMORY_BYTES-}
             env:
-            - name: TP_SIZE
+            - name: DP_SIZE_LOCAL
               value: "4"
-            # MNNVL (Multi-Node NVLink) settings for KV cache transfer
+            - name: TP_SIZE
+              value: "1"
+            - name: TRITON_LIBCUDA_PATH
+              value: /usr/lib64
+            - name: VLLM_SKIP_P2P_CHECK
+              value: "1"
+            - name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+              value: "1"
+            - name: VLLM_USE_DEEP_GEMM
+              value: "1"
+            - name: VLLM_ALL2ALL_BACKEND
+              value: flashinfer_all2allv
+            - name: VLLM_USE_FLASHINFER_MOE_FP4
+              value: "1"
+            - name: VLLM_FLASHINFER_MOE_BACKEND
+              value: throughput
             - name: NCCL_MNNVL_ENABLE
               value: "1"
             - name: NCCL_CUMEM_ENABLE
+              value: "1"
+            - name: NCCL_NVLS_ENABLE
+              value: "1"
+            - name: VLLM_USE_NCCL_SYMM_MEM
               value: "1"
             - name: GLOO_SOCKET_IFNAME
               value: eth0
             - name: NCCL_SOCKET_IFNAME
               value: eth0
             - name: TORCH_DISTRIBUTED_TIMEOUT
-              value: "7200"  # 2 hours for multi-node distributed init
+              value: "7200"
             - name: NCCL_STORE_TIMEOUT
-              value: "7200"  # 2 hours for NCCL store operations
+              value: "7200"
             - name: TORCH_DIST_INIT_BARRIER_TIMEOUT
-              value: "7200"  # 2 hours for barrier timeout
+              value: "7200"
+            - name: VLLM_ENGINE_READY_TIMEOUT_S
+              value: "1800"
             - name: VLLM_NIXL_SIDE_CHANNEL_HOST
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+
+            # Use cache directories from the mounted volume under one easy to mount
+            # root directory.
+            - name: CUDA_CACHE_PATH
+              value: /var/cache/vllm/cuda
+            - name: CCACHE_DIR
+              value: /var/cache/vllm/ccache
+            - name: VLLM_CACHE_ROOT
+              value: /var/cache/vllm/vllm
+            - name: FLASHINFER_WORKSPACE_BASE
+              value: /var/cache/vllm/flashinfer
+            # HuggingFace is likely to be quite a bit larger, give it its own cache
+            - name: HF_HUB_CACHE
+              value: /var/cache/huggingface
+
             ports:
             - containerPort: 8000
               name: metrics
@@ -114,23 +163,29 @@ spec:
               timeoutSeconds: 5
               failureThreshold: 3
             resources:
-              claims:
-                - name: compute-domain-channel
               limits:
+                ephemeral-storage: 1Ti
                 memory: 512Gi
                 nvidia.com/gpu: "4"
               requests:
-                cpu: 32
+                ephemeral-storage: 1Ti
                 memory: 512Gi
                 nvidia.com/gpu: "4"
             volumeMounts:
               - name: dshm
                 mountPath: /dev/shm
+              - name: hf-cache
+                mountPath: /var/cache/huggingface
+              - name: jit-cache
+                mountPath: /var/cache/vllm
     - name: decode-leader
       labels:
         kai.scheduler/queue: default-queue
-        llm-d.ai/inferenceServing: "true"
-        llm-d.ai/model: DeepSeek-R1
+        llm-d.ai/inference-serving: "true"
+        llm-d.ai/guide: "wide-ep"
+        llm-d.ai/accelerator-variant: "gpu"
+        llm-d.ai/accelerator-vendor: "nvidia"
+        llm-d.ai/model: DeepSeek-R1-0528
         llm-d.ai/role: decode
       spec:
         replicas: 1
@@ -138,10 +193,7 @@ spec:
         roleName: decode-leader
         podSpec:
           serviceAccountName: deepseek-r1
-          # Resource claims for ComputeDomain (MNNVL)
-          resourceClaims:
-            - name: compute-domain-channel
-              resourceClaimTemplateName: llm-d-wide-ep-compute-domain-channel
+          schedulerName: kai-scheduler
           initContainers:
             - name: routing-proxy
               args:
@@ -150,7 +202,7 @@ spec:
                 - --connector=nixlv2
                 - -v=1
                 - --secure-proxy=false
-              image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0
+              image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.5.0
               imagePullPolicy: Always
               ports:
                 - containerPort: 8000
@@ -165,10 +217,14 @@ spec:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 2Gi # roughly 32MB per local DP plus scratch space
+                sizeLimit: 2Gi
+            - name: hf-cache
+              emptyDir: {}
+            - name: jit-cache
+              emptyDir: {}
           containers:
           - name: vllm
-            image: ghcr.io/llm-d/llm-d-cuda:v0.4.0
+            image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
             securityContext:
               capabilities:
                 add:
@@ -186,23 +242,12 @@ spec:
                 # https://github.com/llm-d/llm-d/issues/352
                 find /dev/shm -type f -delete
 
-                #################
-                # RUN vLLM decode worker
-                #################
                 START_RANK=0
-
                 LEADER_PCLQ_NAME="${GROVE_PCLQ_NAME/worker/leader}"
                 LEADER_ADDRESS="${LEADER_PCLQ_NAME}-0.${GROVE_HEADLESS_SERVICE}"
 
-              
-                # --data-parallel-hybrid-lb: Use exernal load balancing across nodes, and internal load balancing within a node
-                # --enable-expert-parallel:  Use TPxDP in attention, EP in MoE layers
-                # --async-scheduling: Reduce white space between engine steps
-                # --enable-eplb: Expert-parallel load balancing reduces EP load imbalance by replicating heavily-used experts Performance-memory tradeoff: on DeepSeekV3 eplb uses an extra 2GB per redundant expert per GPU Divisibility constraint: num_routed_experts (256 for DSv3) + num_redundant_experts must be divisible by the number of GPUs.
-                # NOTE: DBO (--enable-dbo) is NOT compatible with flashinfer_all2allv backend required for MNNVL
-
                 exec vllm serve \
-                  nvidia/DeepSeek-R1-NVFP4 \
+                  /models/deepseek-r1-fp4 \
                   --port 8200 \
                   --trust-remote-code \
                   --disable-uvicorn-access-log \
@@ -220,17 +265,6 @@ spec:
                   --compilation_config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
                   --kv-cache-memory-bytes=${KV_CACHE_MEMORY_BYTES-}
             env:
-            # VLLM_MOE_DP_CHUNK_SIZE is a tunable parameter.
-            # Higher values increase the memory footprint of the hidden states in the MoE layers,
-            # which decreases the available memory for KV Cache.
-            # Lower values may cause poor performance, especially in load-imbalanced scenarios.
-            # The value 384 was chosen to be greater than the concurrency expected to see on any DP rank.
-            # If you increase the VLLM_MOE_DP_CHUNK_SIZE above 510 you will also need to increase the
-            # default NVSHMEM_QP_DEPTH to be at least 2 * (chunk_size + 1), which will increase the
-            # memory NVSHMEM allocates up front.
-            # Has no effect when VLLM_ALL2ALL_BACKEND=deepep_high_throughput.
-            - name: VLLM_MOE_DP_CHUNK_SIZE
-              value: "384" # vLLM default is 256
             - name: DP_SIZE_LOCAL
               value: "4"
             - name: TP_SIZE
@@ -245,30 +279,69 @@ spec:
               value: "1"
             - name: VLLM_ALL2ALL_BACKEND
               value: flashinfer_all2allv
-            # FlashInfer FP4 MoE settings for MNNVL
             - name: VLLM_USE_FLASHINFER_MOE_FP4
               value: "1"
             - name: VLLM_FLASHINFER_MOE_BACKEND
               value: throughput
-            # MNNVL (Multi-Node NVLink) settings
+            - name: VLLM_MLA_FP8_PROJ
+              value: "1"
+            - name: VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK
+              value: "1"
+            - name: VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL
+              value: "1"
+            - name: VLLM_DEEPEP_BUFFER_SIZE_MB
+              value: "0"
+            - name: VLLM_EP_USE_SBO
+              value: "0"
+            - name: VLLM_DEEPEPLL_NVFP4_DISPATCH
+              value: "1"
+            - name: VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING
+              value: "0"
+            - name: VLLM_V1_OUTPUT_PROC_CHUNK_SIZE
+              value: "2048"
             - name: NCCL_MNNVL_ENABLE
               value: "1"
             - name: NCCL_CUMEM_ENABLE
+              value: "1"
+            - name: NCCL_NVLS_ENABLE
+              value: "1"
+            - name: VLLM_USE_NCCL_SYMM_MEM
               value: "1"
             - name: GLOO_SOCKET_IFNAME
               value: eth0
             - name: NCCL_SOCKET_IFNAME
               value: eth0
             - name: TORCH_DISTRIBUTED_TIMEOUT
-              value: "7200"  # 2 hours for multi-node distributed init
+              value: "7200"
             - name: NCCL_STORE_TIMEOUT
-              value: "7200"  # 2 hours for NCCL store operations
+              value: "7200"
             - name: TORCH_DIST_INIT_BARRIER_TIMEOUT
-              value: "7200"  # 2 hours for barrier timeout
+              value: "7200"
             - name: VLLM_NIXL_SIDE_CHANNEL_HOST
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5700"
+            - name: VLLM_NIXL_ABORT_REQUEST_TIMEOUT
+              value: "600"
+            - name: VLLM_ENGINE_READY_TIMEOUT_S
+              value: "1800"
+
+            # Use cache directories from the mounted volume under one easy to mount
+            # root directory.
+            - name: CUDA_CACHE_PATH
+              value: /var/cache/vllm/cuda
+            - name: CCACHE_DIR
+              value: /var/cache/vllm/ccache
+            - name: VLLM_CACHE_ROOT
+              value: /var/cache/vllm/vllm
+            - name: FLASHINFER_WORKSPACE_BASE
+              value: /var/cache/vllm/flashinfer
+            # HuggingFace is likely to be quite a bit larger, give it its own cache
+            - name: HF_HUB_CACHE
+              value: /var/cache/huggingface
+
             ports:
             - containerPort: 8200
               name: metrics
@@ -296,23 +369,29 @@ spec:
               timeoutSeconds: 5
               failureThreshold: 3
             resources:
-              claims:
-                - name: compute-domain-channel
               limits:
+                ephemeral-storage: 1Ti
                 memory: 512Gi
                 nvidia.com/gpu: "4"
               requests:
-                cpu: 32
+                ephemeral-storage: 1Ti
                 memory: 512Gi
                 nvidia.com/gpu: "4"
             volumeMounts:
               - name: dshm
                 mountPath: /dev/shm
+              - name: hf-cache
+                mountPath: /var/cache/huggingface
+              - name: jit-cache
+                mountPath: /var/cache/vllm
     - name: decode-worker
       labels:
         kai.scheduler/queue: default-queue
-        llm-d.ai/inferenceServing: "true"
-        llm-d.ai/model: DeepSeek-R1
+        llm-d.ai/inference-serving: "true"
+        llm-d.ai/guide: "wide-ep"
+        llm-d.ai/accelerator-variant: "gpu"
+        llm-d.ai/accelerator-vendor: "nvidia"
+        llm-d.ai/model: DeepSeek-R1-0528
         llm-d.ai/role: decode
       spec:
         replicas: 7
@@ -320,10 +399,7 @@ spec:
         roleName: decode-worker
         podSpec:
           serviceAccountName: deepseek-r1
-          # Resource claims for ComputeDomain (MNNVL)
-          resourceClaims:
-            - name: compute-domain-channel
-              resourceClaimTemplateName: llm-d-wide-ep-compute-domain-channel
+          schedulerName: kai-scheduler
           initContainers:
             - name: routing-proxy
               args:
@@ -332,7 +408,7 @@ spec:
                 - --connector=nixlv2
                 - -v=1
                 - --secure-proxy=false
-              image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0
+              image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.5.0
               imagePullPolicy: Always
               ports:
                 - containerPort: 8000
@@ -347,10 +423,14 @@ spec:
             - name: dshm
               emptyDir:
                 medium: Memory
-                sizeLimit: 2Gi # roughly 32MB per local DP plus scratch space
+                sizeLimit: 2Gi
+            - name: hf-cache
+              emptyDir: {}
+            - name: jit-cache
+              emptyDir: {}
           containers:
           - name: vllm
-            image: ghcr.io/llm-d/llm-d-cuda:v0.4.0
+            image: ghcr.io/llm-d/llm-d-cuda:v0.5.0
             securityContext:
               capabilities:
                 add:
@@ -368,22 +448,12 @@ spec:
                 # https://github.com/llm-d/llm-d/issues/352
                 find /dev/shm -type f -delete
 
-                #################
-                # RUN vLLM decode worker
-                #################
                 START_RANK=$(( ( ${GROVE_PCLQ_POD_INDEX:-0} + 1 ) * DP_SIZE_LOCAL ))
-
                 LEADER_PCLQ_NAME="${GROVE_PCLQ_NAME/worker/leader}"
                 LEADER_ADDRESS="${LEADER_PCLQ_NAME}-0.${GROVE_HEADLESS_SERVICE}"
               
-                # --data-parallel-hybrid-lb: Use exernal load balancing across nodes, and internal load balancing within a node
-                # --enable-expert-parallel:  Use TPxDP in attention, EP in MoE layers
-                # --async-scheduling: Reduce white space between engine steps
-                # --enable-eplb: Expert-parallel load balancing reduces EP load imbalance by replicating heavily-used experts Performance-memory tradeoff: on DeepSeekV3 eplb uses an extra 2GB per redundant expert per GPU Divisibility constraint: num_routed_experts (256 for DSv3) + num_redundant_experts must be divisible by the number of GPUs.
-                # NOTE: DBO (--enable-dbo) is NOT compatible with flashinfer_all2allv backend required for MNNVL
-
                 exec vllm serve \
-                  nvidia/DeepSeek-R1-NVFP4 \
+                  /models/deepseek-r1-fp4 \
                   --port 8200 \
                   --trust-remote-code \
                   --disable-uvicorn-access-log \
@@ -401,17 +471,6 @@ spec:
                   --compilation_config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
                   --kv-cache-memory-bytes=${KV_CACHE_MEMORY_BYTES-}
             env:
-            # VLLM_MOE_DP_CHUNK_SIZE is a tunable parameter.
-            # Higher values increase the memory footprint of the hidden states in the MoE layers,
-            # which decreases the available memory for KV Cache.
-            # Lower values may cause poor performance, especially in load-imbalanced scenarios.
-            # The value 384 was chosen to be greater than the concurrency expected to see on any DP rank.
-            # If you increase the VLLM_MOE_DP_CHUNK_SIZE above 510 you will also need to increase the
-            # default NVSHMEM_QP_DEPTH to be at least 2 * (chunk_size + 1), which will increase the
-            # memory NVSHMEM allocates up front.
-            # Has no effect when VLLM_ALL2ALL_BACKEND=deepep_high_throughput.
-            - name: VLLM_MOE_DP_CHUNK_SIZE
-              value: "384" # vLLM default is 256
             - name: DP_SIZE_LOCAL
               value: "4"
             - name: TP_SIZE
@@ -426,30 +485,67 @@ spec:
               value: "1"
             - name: VLLM_ALL2ALL_BACKEND
               value: flashinfer_all2allv
-            # FlashInfer FP4 MoE settings for MNNVL
             - name: VLLM_USE_FLASHINFER_MOE_FP4
               value: "1"
             - name: VLLM_FLASHINFER_MOE_BACKEND
               value: throughput
-            # MNNVL (Multi-Node NVLink) settings
+            - name: VLLM_MLA_FP8_PROJ
+              value: "1"
+            - name: VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK
+              value: "1"
+            - name: VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL
+              value: "1"
+            - name: VLLM_DEEPEP_BUFFER_SIZE_MB
+              value: "0"
+            - name: VLLM_EP_USE_SBO
+              value: "0"
+            - name: VLLM_DEEPEPLL_NVFP4_DISPATCH
+              value: "1"
+            - name: VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING
+              value: "0"
+            - name: VLLM_V1_OUTPUT_PROC_CHUNK_SIZE
+              value: "2048"
             - name: NCCL_MNNVL_ENABLE
               value: "1"
             - name: NCCL_CUMEM_ENABLE
+              value: "1"
+            - name: NCCL_NVLS_ENABLE
               value: "1"
             - name: GLOO_SOCKET_IFNAME
               value: eth0
             - name: NCCL_SOCKET_IFNAME
               value: eth0
             - name: TORCH_DISTRIBUTED_TIMEOUT
-              value: "7200"  # 2 hours for multi-node distributed init
+              value: "7200"
             - name: NCCL_STORE_TIMEOUT
-              value: "7200"  # 2 hours for NCCL store operations
+              value: "7200"
             - name: TORCH_DIST_INIT_BARRIER_TIMEOUT
-              value: "7200"  # 2 hours for barrier timeout
+              value: "7200"
             - name: VLLM_NIXL_SIDE_CHANNEL_HOST
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5700"
+            - name: VLLM_NIXL_ABORT_REQUEST_TIMEOUT
+              value: "600"
+            - name: VLLM_ENGINE_READY_TIMEOUT_S
+              value: "1800"
+
+            # Use cache directories from the mounted volume under one easy to mount
+            # root directory.
+            - name: CUDA_CACHE_PATH
+              value: /var/cache/vllm/cuda
+            - name: CCACHE_DIR
+              value: /var/cache/vllm/ccache
+            - name: VLLM_CACHE_ROOT
+              value: /var/cache/vllm/vllm
+            - name: FLASHINFER_WORKSPACE_BASE
+              value: /var/cache/vllm/flashinfer
+            # HuggingFace is likely to be quite a bit larger, give it its own cache
+            - name: HF_HUB_CACHE
+              value: /var/cache/huggingface
+
             ports:
             - containerPort: 8200
               name: metrics
@@ -477,18 +573,21 @@ spec:
               timeoutSeconds: 5
               failureThreshold: 3
             resources:
-              claims:
-                - name: compute-domain-channel
               limits:
+                ephemeral-storage: 1Ti
                 memory: 512Gi
                 nvidia.com/gpu: "4"
               requests:
-                cpu: 32
+                ephemeral-storage: 1Ti
                 memory: 512Gi
                 nvidia.com/gpu: "4"
             volumeMounts:
               - name: dshm
                 mountPath: /dev/shm
+              - name: hf-cache
+                mountPath: /var/cache/huggingface
+              - name: jit-cache
+                mountPath: /var/cache/vllm
     podCliqueScalingGroups:
     - name: decode-sg
       cliqueNames: [decode-leader, decode-worker]

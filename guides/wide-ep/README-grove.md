@@ -130,12 +130,12 @@ NAME            NAMESPACE       REVISION    UPDATED                             
 llm-d-infpool   llm-d-wide-ep   1           2025-08-24 13:14:53.355639 -0700 PDT    deployed    inferencepool-v1.0          v0.3.0
 ```
 
-- Out of the box with this example you should have the following resources (if using Istio):
+- Out of the box with this example you should have the following resources (if using Kgateway):
 
 ```bash
 kubectl get all -n ${NAMESPACE}
 NAME                                                          READY   STATUS    RESTARTS   AGE
-pod/infra-wide-ep-inference-gateway-istio-74d5c66c86-h5mfn    1/1     Running   0          2m22s
+pod/infra-wide-ep-inference-gateway-74d5c66c86-h5mfn          1/1     Running   0          2m22s
 pod/llm-d-infpool-epp-84dd98f75b-r6lvh                        1/1     Running   0          2m14s
 pod/llm-d-wide-ep-0-decode-sg-0-decode-leader-cq8vh           2/2     Running   0          2m13s
 pod/llm-d-wide-ep-0-decode-sg-0-decode-worker-2qk4l           2/2     Running   0          2m13s
@@ -148,20 +148,18 @@ pod/llm-d-wide-ep-0-decode-sg-0-decode-worker-x1p9a           2/2     Running   
 pod/llm-d-wide-ep-0-prefill-cckkt                             1/1     Running   0          2m13s
 
 
-NAME                                                   TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                        AGE
-service/infra-wide-ep-inference-gateway-istio          ClusterIP      10.16.1.34      10.16.4.2     15021:30312/TCP,80:33662/TCP   2m22s
-service/wide-ep-ip-1e480070                            ClusterIP      None            <none>        54321/TCP                      2d4h
-service/wide-ep-llm-d-decode                           ClusterIP      None            <none>        <none>                         2m13s
-service/llm-d-infpool-epp                              ClusterIP      10.16.1.137     <none>        9002/TCP                       2d4h
-service/llm-d-wide-ep-0                                ClusterIP      None            <none>        <none>                         2m13s
+NAME                                              TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                        AGE
+service/infra-wide-ep-inference-gateway           ClusterIP      10.16.1.34      10.16.4.2     15021:30312/TCP,80:33662/TCP   2m22s
+service/llm-d-infpool-epp                         ClusterIP      10.16.1.137     <none>        9002/TCP                       2d4h
+service/llm-d-wide-ep-0                           ClusterIP      None            <none>        <none>                         2m13s
 
-NAME                                                         READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/infra-wide-ep-inference-gateway-istio        1/1     1            1           2m22s
-deployment.apps/llm-d-infpool-epp                            1/1     1            1           2m14s
+NAME                                                   READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/infra-wide-ep-inference-gateway        1/1     1            1           2m22s
+deployment.apps/llm-d-infpool-epp                      1/1     1            1           2m14s
 
-NAME                                                                    DESIRED   CURRENT   READY   AGE
-replicaset.apps/infra-wide-ep-inference-gateway-istio-74d5c66c86        1         1         1       2m22s
-replicaset.apps/llm-d-infpool-epp-55bb9857cf                            1         1         1       2m14s
+NAME                                                              DESIRED   CURRENT   READY   AGE
+replicaset.apps/infra-wide-ep-inference-gateway-74d5c66c86        1         1         1       2m22s
+replicaset.apps/llm-d-infpool-epp-55bb9857cf                      1         1         1       2m14s
 ```
 
 
